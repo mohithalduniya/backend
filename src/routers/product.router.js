@@ -10,7 +10,7 @@ import {
   status,
   update,
   updateFlag,
-} from "../CONTROLLERS/product.controller.js";
+} from "../controllers/product.controller.js";
 
 import upload from "../Middleware/Middleware.js";
 
