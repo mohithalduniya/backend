@@ -1,6 +1,6 @@
 import express from "express";
 import upload from "../Middleware/Middleware.js";
-import { createroom, readroom ,readById, deleteById, updateById} from "../CONTROLLERS/room.controller.js";
+import { createroom, readroom ,readById, deleteById, updateById} from "../controllers/room.controller.js";
 
 const router = express.Router();
 
