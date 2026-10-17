@@ -1,6 +1,7 @@
 import express from "express";
 import upload from "../Middleware/Middleware.js";
-import { create, read, readById, deleteById, update, status } from "../CONTROLLERS/Category.controller.js";
+import { create, read, readById, deleteById, update, status }
+from "../controllers/Category.controller.js";
 
 const router = express.Router();
 
