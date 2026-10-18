@@ -14,27 +14,51 @@ const server = express();
 server.use(express.json());
 server.use(cookieParser());
 server.use('/uploads', express.static('uploads'));
+
+const allowedOrigins = [
+  "http://localhost:3000",
+  process.env.FRONTEND_URL,
+].filter(Boolean);
+
 server.use(
   cors({
-    origin: ["http://localhost:3000"],
+    origin: (origin, callback) => {
+      // allow requests with no origin (like mobile apps, curl, or server-side fetch)
+      if (!origin) return callback(null, true);
+      if (
+        allowedOrigins.includes(origin) ||
+        /\.vercel\.app$/.test(origin) ||
+        process.env.NODE_ENV !== "production"
+      ) {
+        return callback(null, true);
+      }
+      return callback(null, true);
+    },
     credentials: true,
   })
 );
+
+// Health check endpoint for Render
+server.get("/", (req, res) => {
+  res.json({ success: true, message: "Nestro API server is running." });
+});
+
 server.use("/api/category", CategoRyrouter);
 server.use("/api/room", roomrouter);
 server.use("/api/product", productrouter);
 server.use("/api/user", userrouter);
 server.use("/api/order", orderrouter);
 
+const PORT = process.env.PORT || 5000;
+
 mongoose
   .connect(process.env.DATABASE_URL)
   .then(() => {
-    server.listen(process.env.PORT || 5000, () => {
-      console.log("server running on 5000 port ");
-
-      console.log("database is connected  ");
+    server.listen(PORT, () => {
+      console.log(`Server running on port ${PORT}`);
+      console.log("Database connected successfully");
     });
   })
-  .catch(() => {
-    console.log("database not connected");
+  .catch((err) => {
+    console.error("Database connection error:", err?.message || err);
   });
