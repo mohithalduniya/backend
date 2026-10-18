@@ -29,12 +29,22 @@ export const create = async (req, res) => {
     if (category) {
       return sendConflict(res, "Category already exists");
     }
-    const imageUrl = req.file.path; // Cloudinary's final secure URL
+    // Image is optional (the admin form does not require it)
+    const imageUrl = req.file?.path ?? undefined; // Cloudinary's final secure URL
+    // Admin form sends "Active"/"Inactive" (or a boolean)
+    const statusBool =
+      typeof req.body.status === "string"
+        ? req.body.status.toLowerCase() === "active" ||
+          req.body.status.toLowerCase() === "true"
+        : req.body.status === undefined
+          ? true
+          : Boolean(req.body.status);
     // Create category
     await CategoryModel.create({
       name,
       slug,
       image: imageUrl,
+      status: statusBool,
     });
 
     return sendCreated(res, "Category created successfully");
@@ -157,7 +167,7 @@ export const update = async (req, res) => {
   try {
     const { id } = req.params;
     const { name = "", slug = "" } = req.body;
-    const imageUrl = req.file.path ?? null;
+    const imageUrl = req.file?.path ?? null;
 
     // Validate ID
     if (!mongoose.Types.ObjectId.isValid(id)) {
@@ -188,6 +198,12 @@ export const update = async (req, res) => {
     if (name) category.name = name;
     if (slug) category.slug = slug;
     if (imageUrl) category.image = imageUrl;
+    if (req.body.status !== undefined) {
+      category.status =
+        typeof req.body.status === "string"
+          ? ["active", "true"].includes(req.body.status.toLowerCase())
+          : Boolean(req.body.status);
+    }
     await category.save();
 
     return sendSuccess(res, "Category updated successfully");

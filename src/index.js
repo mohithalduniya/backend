@@ -49,6 +49,18 @@ server.use("/api/product", productrouter);
 server.use("/api/user", userrouter);
 server.use("/api/order", orderrouter);
 
+// Central error handler: upload (multer/Cloudinary) and other thrown errors
+// now return JSON with the real reason instead of a bare HTML "Internal Server Error".
+server.use((err, req, res, next) => {
+  console.error("Unhandled error:", err);
+  if (res.headersSent) return next(err);
+  const status = err.status || err.statusCode || (err.name === "MulterError" ? 400 : 500);
+  res.status(status).json({
+    success: false,
+    message: err.message || "Internal server error",
+  });
+});
+
 const PORT = process.env.PORT || 5000;
 
 mongoose
