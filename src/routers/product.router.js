@@ -1,7 +1,4 @@
 import express from "express";
-
-const router = express.Router();
-
 import {
   create,
   deleteById,
@@ -11,21 +8,21 @@ import {
   update,
   updateFlag,
 } from "../controllers/product.controller.js";
-
 import upload from "../Middleware/Middleware.js";
+import { verifyToken, requireAdmin } from "../Middleware/auth.middleware.js";
 
-router.post("/create", upload.single("image"), create);
+const router = express.Router();
 
+// Public routes for storefront
 router.get("/", read);
-
 router.get("/:id", readById);
 
-router.patch("/status/:id", status);
-
-router.patch("/flag/:id", updateFlag);
-
-router.delete("/delete/:id", deleteById);
-
-router.put("/update/:id", upload.single("image"), update);
+// Admin protected routes
+router.post("/create", verifyToken, requireAdmin, upload.single("image"), create);
+router.put("/update/:id", verifyToken, requireAdmin, upload.single("image"), update);
+router.patch("/status/:id", verifyToken, requireAdmin, status);
+router.patch("/flag/:id", verifyToken, requireAdmin, updateFlag);
+router.delete("/delete/:id", verifyToken, requireAdmin, deleteById);
+router.delete("/:id", verifyToken, requireAdmin, deleteById);
 
 export default router;

@@ -168,3 +168,29 @@ export const updateById = async (req, res) => {
     });
   }
 };
+
+// 6. Toggle room status
+export const status = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const room = await roomModel.findById(id);
+    if (!room) {
+      return res.status(404).json({
+        success: false,
+        message: "Room not found",
+      });
+    }
+    room.status = !room.status;
+    await room.save();
+    return res.status(200).json({
+      success: true,
+      message: "Room status updated successfully",
+      room,
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      message: error.message || "Internal server error",
+    });
+  }
+};
