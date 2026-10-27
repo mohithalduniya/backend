@@ -89,41 +89,46 @@ export const register = async (req, res) => {
     if (existingUser && existingUser.isVerified)
       return sendConflict(res, "Email already registered");
     // Generate OTP
+const otp = generateOtp();
+const otpExpire = getOtpExpire();
 
-    const otp = generateOtp();
-    const otpExpire = getOtpExpire();
+let user;
+if (existingUser) {
+  existingUser.name = name;
+  existingUser.password = password;
+  existingUser.otp = otp;
+  existingUser.otpExpire = otpExpire;
+  await existingUser.save();
+  user = existingUser;
+} else {
+  user = await UserModel.create({
+    name,
+    email: email.toLowerCase(),
+    password,
+    isVerified: false,
+    otp,
+    otpExpire,
+  });
+}
 
-    const emailResult = await sendOtpMail(email, otp);
-    if (!emailResult.success) {
-      return sendServerError(res);
-    }
+const emailResult = await sendOtpMail(user.email, otp);
+if (!emailResult.success) {
+  // user saved hai, frontend OTP page par jaake "Resend OTP" use kar sakta hai
+  return res.status(201).json({
+    success: true,
+    emailSent: false,
+    message: "Account created but OTP email failed. Please tap Resend OTP.",
+    email: user.email,
+  });
+}
 
-    let user;
-    if (existingUser) {
-      existingUser.name = name;
-      existingUser.password = password; // Should hash in real app
-      existingUser.otp = otp;
-      existingUser.otpExpire = otpExpire;
-      await existingUser.save();
-      user = existingUser;
-    } else {
-      // Create new user
-      user = await UserModel.create({
-        name,
-        email: email.toLowerCase(),
-        password,
-        isVerified: false,
-        otp,
-        otpExpire,
-      });
-    }
-
-    return res.status(201).json({
-      success: true,
-      message: "Registration successful. Please verify OTP.",
-      email: user.email,
-    });
-  } catch (error) {
+return res.status(201).json({
+  success: true,
+  emailSent: true,
+  message: "Registration successful. Please verify OTP.",
+  email: user.email,
+});
+      } catch (error) {
     console.error("Register Error:", error);
     return sendServerError(res);
   }
