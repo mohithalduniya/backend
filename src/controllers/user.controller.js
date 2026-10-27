@@ -76,59 +76,55 @@ export const register = async (req, res) => {
   try {
     const { name, email, password } = req.body;
 
-    console.log(req.body);
-
     // Validation
     if (!name || !email || !password)
       return sendBadRequest(res, "Name, email and password are required");
+
+    const normalizedEmail = email.toLowerCase().trim();
+
     // Check existing user
-    const existingUser = await UserModel.findOne({
-      email: email.toLowerCase(),
-    });
+    const existingUser = await UserModel.findOne({ email: normalizedEmail });
+
     // Already verified user
     if (existingUser && existingUser.isVerified)
       return sendConflict(res, "Email already registered");
+
     // Generate OTP
-const otp = generateOtp();
-const otpExpire = getOtpExpire();
+    const otp = generateOtp();
+    const otpExpire = getOtpExpire();
 
-let user;
-if (existingUser) {
-  existingUser.name = name;
-  existingUser.password = password;
-  existingUser.otp = otp;
-  existingUser.otpExpire = otpExpire;
-  await existingUser.save();
-  user = existingUser;
-} else {
-  user = await UserModel.create({
-    name,
-    email: email.toLowerCase(),
-    password,
-    isVerified: false,
-    otp,
-    otpExpire,
-  });
-}
+    // Save user FIRST so data is never lost if the email fails
+    let user;
+    if (existingUser) {
+      existingUser.name = name;
+      existingUser.password = password; // Should hash in real app
+      existingUser.otp = otp;
+      existingUser.otpExpire = otpExpire;
+      await existingUser.save();
+      user = existingUser;
+    } else {
+      user = await UserModel.create({
+        name,
+        email: normalizedEmail,
+        password, // Should hash in real app
+        isVerified: false,
+        otp,
+        otpExpire,
+      });
+    }
 
-const emailResult = await sendOtpMail(user.email, otp);
-if (!emailResult.success) {
-  // user saved hai, frontend OTP page par jaake "Resend OTP" use kar sakta hai
-  return res.status(201).json({
-    success: true,
-    emailSent: false,
-    message: "Account created but OTP email failed. Please tap Resend OTP.",
-    email: user.email,
-  });
-}
+    // Then try to send the OTP email
+    const emailResult = await sendOtpMail(user.email, otp);
 
-return res.status(201).json({
-  success: true,
-  emailSent: true,
-  message: "Registration successful. Please verify OTP.",
-  email: user.email,
-});
-      } catch (error) {
+    return res.status(201).json({
+      success: true,
+      emailSent: emailResult.success,
+      message: emailResult.success
+        ? "Registration successful. Please verify OTP."
+        : "Account created but OTP email failed. Please tap Resend OTP.",
+      email: user.email,
+    });
+  } catch (error) {
     console.error("Register Error:", error);
     return sendServerError(res);
   }
@@ -140,7 +136,7 @@ export const verifyRegisterOtp = async (req, res) => {
 
     if (!email || !otp)
       return sendBadRequest(res, "Email and Otp are required");
-    const user = await UserModel.findOne({ email: email.toLowerCase() });
+    const user = await UserModel.findOne({ email: email.toLowerCase().trim() });
     if (!user) return sendConflict(res, "User not found");
     // Already verified
     if (user.isVerified) {
@@ -215,23 +211,23 @@ export const resendRegisterOtp = async (req, res) => {
       return sendConflict(res, "Account already verified");
     }
 
-    // Generate new OTP
+    // Generate new OTP and save it first
     const otp = generateOtp();
     const otpExpire = getOtpExpire();
+
+    user.otp = otp;
+    user.otpExpire = otpExpire;
+    await user.save();
 
     // Send OTP email
     const emailResult = await sendOtpMail(normalizedEmail, otp);
 
-    // Email sending failed
     if (!emailResult.success) {
-      return sendServerError(res, "Failed to send OTP email");
+      return res.status(502).json({
+        success: false,
+        message: "Could not send OTP email right now. Please try again later.",
+      });
     }
-
-    // Update OTP in database
-    user.otp = otp;
-    user.otpExpire = otpExpire;
-
-    await user.save();
 
     return res.status(200).json({
       success: true,
