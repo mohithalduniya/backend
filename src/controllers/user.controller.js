@@ -7,14 +7,23 @@ import {
   sendSuccess,
 } from "../utils/response.js";
 import sendOtpMail from "../utils/sendOtpMail.js";
+import { hashPassword, verifyPassword } from "../utils/password.js";
+
+const MAX_OTP_ATTEMPTS = 5;
+const OTP_VALIDITY_MS = 5 * 60 * 1000;
+const RESEND_COOLDOWN_MS = 30 * 1000;
+
+// Single source of truth so login and logout always use identical cookie options
+// (a cookie can only be cleared with the same attributes it was set with).
+const cookieOptions = () => ({
+  httpOnly: true,
+  secure: process.env.NODE_ENV === "production",
+  sameSite: "lax",
+});
 
 const logout = async (req, res) => {
   try {
-    res.clearCookie("token", {
-      httpOnly: true,
-      secure: true,
-      sameSite: "lax",
-    });
+    res.clearCookie("token", cookieOptions());
 
     return res.status(200).json({
       success: true,
@@ -80,6 +89,9 @@ export const register = async (req, res) => {
     if (!name || !email || !password)
       return sendBadRequest(res, "Name, email and password are required");
 
+    if (String(password).length < 8)
+      return sendBadRequest(res, "Password must be at least 8 characters");
+
     const normalizedEmail = email.toLowerCase().trim();
 
     // Check existing user
@@ -93,23 +105,27 @@ export const register = async (req, res) => {
     const otp = generateOtp();
     const otpExpire = getOtpExpire();
 
+    const hashedPassword = await hashPassword(password);
+
     // Save user FIRST so data is never lost if the email fails
     let user;
     if (existingUser) {
-      existingUser.name = name;
-      existingUser.password = password; // Should hash in real app
+      existingUser.name = name.trim();
+      existingUser.password = hashedPassword;
       existingUser.otp = otp;
       existingUser.otpExpire = otpExpire;
+      existingUser.otpAttempts = 0;
       await existingUser.save();
       user = existingUser;
     } else {
       user = await UserModel.create({
-        name,
+        name: name.trim(),
         email: normalizedEmail,
-        password, // Should hash in real app
+        password: hashedPassword,
         isVerified: false,
         otp,
         otpExpire,
+        otpAttempts: 0,
       });
     }
 
@@ -146,19 +162,33 @@ export const verifyRegisterOtp = async (req, res) => {
       });
     }
 
-    // OTP check
-    if (Number(otp) !== Number(user.otp)) {
-      return res.status(400).json({
-        success: false,
-        message: "Invalid OTP",
-      });
+    if (!user.otp || !user.otpExpire) {
+      return sendBadRequest(res, "No OTP requested. Please resend OTP.");
     }
 
     // Expiry check
     if (user.otpExpire < new Date()) {
       return res.status(400).json({
         success: false,
-        message: "OTP has expired",
+        message: "OTP has expired. Please resend OTP.",
+      });
+    }
+
+    // Brute-force protection: a 6-digit code must not be guessable by retrying
+    if ((user.otpAttempts || 0) >= MAX_OTP_ATTEMPTS) {
+      return res.status(429).json({
+        success: false,
+        message: "Too many wrong attempts. Please resend OTP to get a new code.",
+      });
+    }
+
+    // OTP check
+    if (String(otp).trim() !== String(user.otp)) {
+      user.otpAttempts = (user.otpAttempts || 0) + 1;
+      await user.save();
+      return res.status(400).json({
+        success: false,
+        message: "Invalid OTP",
       });
     }
 
@@ -168,6 +198,7 @@ export const verifyRegisterOtp = async (req, res) => {
     // Remove OTP after successful verification
     user.otp = undefined;
     user.otpExpire = undefined;
+    user.otpAttempts = 0;
 
     await user.save();
 
@@ -211,12 +242,25 @@ export const resendRegisterOtp = async (req, res) => {
       return sendConflict(res, "Account already verified");
     }
 
+    // Cooldown: the OTP was issued at (otpExpire - validity). Block rapid re-sends.
+    if (user.otpExpire) {
+      const issuedAt = user.otpExpire.getTime() - OTP_VALIDITY_MS;
+      const waitMs = RESEND_COOLDOWN_MS - (Date.now() - issuedAt);
+      if (waitMs > 0) {
+        return res.status(429).json({
+          success: false,
+          message: `Please wait ${Math.ceil(waitMs / 1000)} seconds before requesting a new OTP.`,
+        });
+      }
+    }
+
     // Generate new OTP and save it first
     const otp = generateOtp();
     const otpExpire = getOtpExpire();
 
     user.otp = otp;
     user.otpExpire = otpExpire;
+    user.otpAttempts = 0;
     await user.save();
 
     // Send OTP email
@@ -255,8 +299,8 @@ export const login = async (req, res) => {
     if (!user.isVerified)
       return sendConflict(res, "Please verify your account OTP first");
 
-    if (user.password !== password)
-      return sendBadRequest(res, "Incorrect password");
+    const check = await verifyPassword(password, user.password);
+    if (!check.ok) return sendBadRequest(res, "Incorrect password");
 
     if (user.status === false) {
       return res.status(403).json({
@@ -265,12 +309,16 @@ export const login = async (req, res) => {
       });
     }
 
+    // Upgrade legacy plain-text passwords to a hash on first successful login
+    if (check.needsRehash) {
+      user.password = await hashPassword(password);
+      await user.save();
+    }
+
     const token = generateToken(user);
     res.cookie("token", token, {
+      ...cookieOptions(),
       maxAge: 30 * 24 * 60 * 60 * 1000,
-      httpOnly: true,
-      secure: process.env.NODE_ENV === "production",
-      sameSite: "lax",
     });
 
     const userData = {
@@ -301,8 +349,8 @@ export const adminLogin = async (req, res) => {
 
     const user = await UserModel.findOne({ email: email.toLowerCase().trim() });
     if (!user) return sendBadRequest(res, "Invalid email or password");
-    if (user.password !== password)
-      return sendBadRequest(res, "Invalid email or password");
+    const check = await verifyPassword(password, user.password);
+    if (!check.ok) return sendBadRequest(res, "Invalid email or password");
 
     if (user.role !== "admin" && user.role !== "superAdmin") {
       return res.status(403).json({
@@ -318,12 +366,15 @@ export const adminLogin = async (req, res) => {
       });
     }
 
+    if (check.needsRehash) {
+      user.password = await hashPassword(password);
+      await user.save();
+    }
+
     const token = generateToken(user);
     res.cookie("token", token, {
+      ...cookieOptions(),
       maxAge: 30 * 24 * 60 * 60 * 1000,
-      httpOnly: true,
-      secure: process.env.NODE_ENV === "production",
-      sameSite: "lax",
     });
 
     const userData = {
@@ -345,40 +396,45 @@ export const adminLogin = async (req, res) => {
   }
 };
 
+// One-time bootstrap of the first admin account.
+// - Refuses to touch an existing account (previously anyone could reset its password).
+// - In production the password must come from ADMIN_PASSWORD; the old hard-coded
+//   default is only used for local development.
 export const seedAdmin = async (req, res) => {
   try {
-    const adminEmail = "admin@nestro.com";
-    let admin = await UserModel.findOne({ email: adminEmail });
+    const adminEmail = (process.env.ADMIN_EMAIL || "admin@nestro.com")
+      .toLowerCase()
+      .trim();
+    const isProd = process.env.NODE_ENV === "production";
+    const adminPassword =
+      process.env.ADMIN_PASSWORD || (isProd ? null : "admin123");
 
-    if (admin) {
-      admin.role = "admin";
-      admin.isVerified = true;
-      admin.password = "admin123";
-      await admin.save();
-      return res.status(200).json({
-        success: true,
-        message: "Admin account already exists and updated to admin role",
-        email: adminEmail,
-        role: admin.role,
-        credentials: "email: admin@nestro.com, password: admin123",
+    if (!adminPassword) {
+      return res.status(403).json({
+        success: false,
+        message: "Set ADMIN_PASSWORD in the server environment to seed an admin in production.",
       });
     }
 
-    admin = await UserModel.create({
+    const existing = await UserModel.findOne({ email: adminEmail });
+    if (existing) {
+      return sendConflict(res, "Admin account already exists");
+    }
+
+    const admin = await UserModel.create({
       name: "Nestro Admin",
       email: adminEmail,
-      password: "admin123",
-      role: "admin",
+      password: await hashPassword(adminPassword),
+      role: "superAdmin",
       isVerified: true,
       status: true,
     });
 
     return res.status(201).json({
       success: true,
-      message: "Default admin account created successfully",
-      email: adminEmail,
+      message: "Admin account created successfully",
+      email: admin.email,
       role: admin.role,
-      credentials: "email: admin@nestro.com, password: admin123",
     });
   } catch (error) {
     return sendServerError(res, error);

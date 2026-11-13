@@ -53,6 +53,10 @@ const userSchema = new mongoose.Schema({
         type: Number
     },
     otpExpire: Date,
+    otpAttempts: {
+        type: Number,
+        default: 0
+    },
     status: {
         type: Boolean,
         default: true

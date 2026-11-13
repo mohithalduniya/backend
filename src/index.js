@@ -9,6 +9,7 @@ import roomrouter from "./routers/room.router.js";
 import productrouter from "./routers/product.router.js";
 import userrouter from "./routers/user.router.js";
 import orderrouter from "./routers/order.router.js";
+import contactrouter from "./routers/contact.router.js";
 
 const server = express();
 server.use(express.json());
@@ -48,6 +49,7 @@ server.use("/api/room", roomrouter);
 server.use("/api/product", productrouter);
 server.use("/api/user", userrouter);
 server.use("/api/order", orderrouter);
+server.use("/api/contact", contactrouter);
 
 // Central error handler: upload (multer/Cloudinary) and other thrown errors
 // now return JSON with the real reason instead of a bare HTML "Internal Server Error".
@@ -62,6 +64,13 @@ server.use((err, req, res, next) => {
 });
 
 const PORT = process.env.PORT || 5000;
+
+if (!process.env.SECRET_KEY) {
+  console.warn("WARNING: SECRET_KEY is not set. Falling back to a public default; set it before going live.");
+}
+if (!process.env.RESEND_API_KEY) {
+  console.warn("WARNING: RESEND_API_KEY is not set. OTP and contact emails will not be sent.");
+}
 
 mongoose
   .connect(process.env.DATABASE_URL)

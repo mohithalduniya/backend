@@ -12,18 +12,18 @@ import {
   seedAdmin,
   setRole,
 } from "../controllers/user.controller.js";
-import { verifyToken } from "../Middleware/auth.middleware.js";
+import { verifyToken, requireRoles } from "../Middleware/auth.middleware.js";
 
 // Public Auth Routes
 router.post("/register", register);
 router.post("/verify-register-otp", verifyRegisterOtp);
 router.post("/resent-register-otp", resendRegisterOtp);
+router.post("/resend-register-otp", resendRegisterOtp);
 router.post("/login", login);
 router.post("/admin/login", adminLogin);
 router.post("/logout", logout);
-router.get("/seed-admin", seedAdmin);
 router.post("/seed-admin", seedAdmin);
-router.post("/set-role", setRole);
+router.post("/set-role", verifyToken, requireRoles("superAdmin"), setRole);
 
 // Protected User Routes (Authentication required)
 router.get("/me", verifyToken, getMe);

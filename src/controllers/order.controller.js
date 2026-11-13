@@ -1,5 +1,6 @@
 import OrderModel from "../models/order.model.js";
 import UserModel from "../models/user.model.js";
+import ProductModel from "../models/product.model.js";
 import {
   sendBadRequest,
   sendNotFound,
@@ -39,27 +40,44 @@ export const createOrder = async (req, res) => {
       );
     }
 
-    // Calculate subtotal and validate items
+    // Prices, names and availability come from the database, never from the client.
+    const productIds = items.map((item) => item.product || item.id || item._id);
+    if (productIds.some((id) => !id || !/^[0-9a-fA-F]{24}$/.test(String(id)))) {
+      return sendBadRequest(res, "Invalid product in order.");
+    }
+
+    const products = await ProductModel.find({ _id: { $in: productIds } });
+    const productMap = new Map(products.map((p) => [p._id.toString(), p]));
+
     let subtotal = 0;
-    const formattedItems = items.map((item) => {
-      const price = Number(item.price) || 0;
-      const salePrice =
-        Number(item.salePrice || item.saleprice) || price;
-      const qty = Number(item.qty) || 1;
+    const formattedItems = [];
+    for (const item of items) {
+      const product = productMap.get(String(item.product || item.id || item._id));
+      if (!product || product.status === false) {
+        return sendBadRequest(res, "One of the products is no longer available.");
+      }
+      if (product.stock === false) {
+        return sendBadRequest(res, `"${product.name}" is out of stock.`);
+      }
+
+      const qty = Math.min(Math.max(parseInt(item.qty, 10) || 1, 1), 99);
+      const price = Number(product.price) || 0;
+      const salePrice = Number(product.salePrice) || price;
       subtotal += salePrice * qty;
 
-      return {
-        product: item.product || item.id || item._id,
-        name: item.name,
-        thumbnail: item.thumbnail,
+      formattedItems.push({
+        product: product._id,
+        name: product.name,
+        thumbnail: product.thumbnail,
         price,
         salePrice,
         qty,
-      };
-    });
+      });
+    }
 
-    const parsedDiscount = Number(discount) || 0;
-    const parsedShippingCost = Number(shippingCost) || 0;
+    // Discount can never exceed the subtotal; shipping can never be negative.
+    const parsedDiscount = Math.min(Math.max(Number(discount) || 0, 0), subtotal);
+    const parsedShippingCost = Math.max(Number(shippingCost) || 0, 0);
     const total = Math.max(0, subtotal - parsedDiscount + parsedShippingCost);
 
     // Unique Order ID: ORD-YYYYMMDD-XXXX
@@ -268,30 +286,68 @@ export const updateOrderStatus = async (req, res) => {
 // Admin: Get dashboard order statistics
 export const getOrderStats = async (req, res) => {
   try {
-    const totalOrders = await OrderModel.countDocuments();
-    const pendingOrders = await OrderModel.countDocuments({
-      orderStatus: "Pending",
-    });
-    const processingOrders = await OrderModel.countDocuments({
-      orderStatus: "Processing",
-    });
-    const shippedOrders = await OrderModel.countDocuments({
-      orderStatus: "Shipped",
-    });
-    const deliveredOrders = await OrderModel.countDocuments({
-      orderStatus: "Delivered",
-    });
+    // Optional ?range=today|week|month limits every figure to that window.
+    const rangeDays = { today: 1, week: 7, month: 30 }[
+      String(req.query.range || "").toLowerCase()
+    ];
+    const dateFilter = {};
+    if (rangeDays) {
+      const since = new Date();
+      if (rangeDays === 1) since.setHours(0, 0, 0, 0);
+      else since.setTime(Date.now() - rangeDays * 24 * 60 * 60 * 1000);
+      dateFilter.createdAt = { $gte: since };
+    }
+
+    const [
+      totalOrders,
+      pendingOrders,
+      processingOrders,
+      shippedOrders,
+      deliveredOrders,
+    ] = await Promise.all([
+      OrderModel.countDocuments(dateFilter),
+      OrderModel.countDocuments({ ...dateFilter, orderStatus: "Pending" }),
+      OrderModel.countDocuments({ ...dateFilter, orderStatus: "Processing" }),
+      OrderModel.countDocuments({ ...dateFilter, orderStatus: "Shipped" }),
+      OrderModel.countDocuments({ ...dateFilter, orderStatus: "Delivered" }),
+    ]);
 
     // Revenue calculation (excluding cancelled orders)
     const revenueAgg = await OrderModel.aggregate([
-      { $match: { orderStatus: { $ne: "Cancelled" } } },
+      { $match: { ...dateFilter, orderStatus: { $ne: "Cancelled" } } },
       { $group: { _id: null, totalRevenue: { $sum: "$total" } } },
     ]);
     const totalRevenue =
       revenueAgg.length > 0 ? revenueAgg[0].totalRevenue : 0;
 
+    // Best selling products (excluding cancelled orders)
+    const topProductsAgg = await OrderModel.aggregate([
+      { $match: { ...dateFilter, orderStatus: { $ne: "Cancelled" } } },
+      { $unwind: "$items" },
+      {
+        $group: {
+          _id: "$items.product",
+          name: { $first: "$items.name" },
+          thumbnail: { $first: "$items.thumbnail" },
+          sales: { $sum: "$items.qty" },
+          revenue: {
+            $sum: { $multiply: ["$items.salePrice", "$items.qty"] },
+          },
+        },
+      },
+      { $sort: { sales: -1, revenue: -1 } },
+      { $limit: 4 },
+    ]);
+    const topProducts = topProductsAgg.map((p) => ({
+      id: p._id,
+      name: p.name,
+      thumbnail: p.thumbnail,
+      sales: p.sales,
+      revenue: p.revenue,
+    }));
+
     // Recent 5 orders
-    const recentOrders = await OrderModel.find()
+    const recentOrders = await OrderModel.find(dateFilter)
       .populate("user", "name email")
       .sort({ createdAt: -1 })
       .limit(5);
@@ -324,6 +380,7 @@ export const getOrderStats = async (req, res) => {
         deliveredOrders,
       },
       recentOrders: formattedRecentOrders,
+      topProducts,
     });
   } catch (error) {
     return sendServerError(res, error);
