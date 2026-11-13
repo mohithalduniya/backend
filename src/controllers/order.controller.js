@@ -369,6 +369,43 @@ export const getOrderStats = async (req, res) => {
       createdAt: ord.createdAt,
     }));
 
+    // Monthly revenue/orders for the last 12 calendar months (ignores the range filter)
+    const trendStart = new Date();
+    trendStart.setDate(1);
+    trendStart.setHours(0, 0, 0, 0);
+    trendStart.setMonth(trendStart.getMonth() - 11);
+
+    const monthlyAgg = await OrderModel.aggregate([
+      {
+        $match: {
+          createdAt: { $gte: trendStart },
+          orderStatus: { $ne: "Cancelled" },
+        },
+      },
+      {
+        $group: {
+          _id: { y: { $year: "$createdAt" }, m: { $month: "$createdAt" } },
+          revenue: { $sum: "$total" },
+          orders: { $sum: 1 },
+        },
+      },
+    ]);
+
+    const monthlyTrend = [];
+    for (let i = 0; i < 12; i++) {
+      const d = new Date(trendStart.getFullYear(), trendStart.getMonth() + i, 1);
+      const year = d.getFullYear();
+      const month = d.getMonth() + 1;
+      const hit = monthlyAgg.find((x) => x._id.y === year && x._id.m === month);
+      monthlyTrend.push({
+        label: d.toLocaleString("en-US", { month: "short" }),
+        year,
+        month,
+        revenue: hit?.revenue || 0,
+        orders: hit?.orders || 0,
+      });
+    }
+
     return res.status(200).json({
       success: true,
       stats: {
@@ -381,6 +418,7 @@ export const getOrderStats = async (req, res) => {
       },
       recentOrders: formattedRecentOrders,
       topProducts,
+      monthlyTrend,
     });
   } catch (error) {
     return sendServerError(res, error);
